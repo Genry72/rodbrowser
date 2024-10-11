@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"github.com/Genry72/rodbrowser/pkg/logger"
@@ -176,6 +177,9 @@ func getLounch(userDataPath string) *launcher.Launcher {
 	return l
 }
 
+//go:embed data/templateUserDataDir
+var srcTemplateDir embed.FS
+
 // Создание или копирование папки с сессиями браузера
 func createOrMakeFolder(userDataPath string) error {
 	pwd, err := os.Getwd()
@@ -191,9 +195,10 @@ func createOrMakeFolder(userDataPath string) error {
 		return nil
 	}
 
-	src := path.Join(pwd, relativeUserDataPath, "templateUserDataDir")
-
-	if err := cp.Copy(src, resultPath); err != nil {
+	if err := cp.Copy("data/templateUserDataDir", resultPath, cp.Options{
+		FS:                srcTemplateDir,
+		PermissionControl: cp.AddPermission(0777),
+	}); err != nil {
 		return fmt.Errorf("cp.Copy: %w", err)
 	}
 

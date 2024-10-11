@@ -1,0 +1,83 @@
+on:
+  push:
+    # Sequence of patterns matched against refs/tags
+    tags:
+      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+
+permissions:
+  contents: write
+  packages: write
+
+name: Create Release
+
+jobs:
+  build:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags
+      - name: Get last two tags
+        id: get_tags
+        run: |
+          VERSION=$(git tag --sort=-creatordate | head -1)
+          echo $VERSION
+          PREVIOUS_VERSION=$(git tag --sort=-creatordate | head -2 | awk '{split($0, tags, "\n")} END {print tags[1]}')
+          echo $PREVIOUS_VERSION
+          CHANGES=$(git log $PREVIOUS_VERSION..$VERSION --oneline)
+          echo $CHANGES
+          echo "$CHANGES" >> change_msg.txt
+      - name: Set the value in bash
+        id: step_one
+        run: |
+          {
+            echo 'CHANGES_MSG<<EOF'
+            cat change_msg.txt
+            echo EOF
+          } >> "$GITHUB_ENV"
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            Changes in this Release
+            ${{ env.CHANGES_MSG }}
+          draft: false
+          prerelease: false
+  #  Выгрузка бинарников
+  releases-matrix:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # build and publish in parallel: linux/386, linux/amd64, linux/arm64, windows/386, windows/amd64, darwin/amd64, darwin/arm64
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goarch: arm64
+            goos: windows
+          - goarch: arm64
+            goos: linux
+          - goarch: amd64
+            goos: darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wangyoucao577/go-release-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          #          goversion: "https://dl.google.com/go/go1.13.1.linux-amd64.tar.gz"
+          project_path: "./cmd"
+          binary_name: "skidochnik"
+          extra_files: README.md

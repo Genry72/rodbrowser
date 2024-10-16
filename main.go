@@ -163,11 +163,11 @@ func main() {
 			}
 
 			// Копирование папки сессий браузера, если их нет
-			if err := createOrMakeFolder(userDataPath); err != nil {
-				zaplogger.Error("createOrMakeFolder", zap.Error(err))
-				_ = c.AbortWithError(500, fmt.Errorf("createOrMakeFolder %w", err))
-				return
-			}
+			//if err := createOrMakeFolder(userDataPath); err != nil {
+			//	zaplogger.Error("createOrMakeFolder", zap.Error(err))
+			//	_ = c.AbortWithError(500, fmt.Errorf("createOrMakeFolder %w", err))
+			//	return
+			//}
 
 			zaplogger.Info("Открыли",
 				zap.Int("count open browsers", len(umap.m)),

@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/Genry72/rodbrowser/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
+	"github.com/go-rod/rod/lib/utils"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"log"
@@ -17,6 +19,9 @@ import (
 	"time"
 )
 
+// Ключ для запуска в докере
+var isDocker bool
+
 const hostport = ":8081"
 
 const (
@@ -25,65 +30,11 @@ const (
 	flagPstxID           = "pstxID"
 )
 
-type connectMap struct {
-	m  map[string]string // Мапа для хранения папки с данными браузера
-	mx sync.Mutex
-}
-
-// getNewName возвращает не занятое имя и добавляет его в занятые
-func (c *connectMap) getNewName(pstxID string) string {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-	for i := 1; i < 10; i++ {
-		n := fmt.Sprintf("%s%d", relativeUserDataPath, i)
-		if _, ok := c.m[n]; !ok {
-			c.m[n] = pstxID
-			return n
-		}
-	}
-
-	return ""
-}
-
-// deleteByName Освобождение занятого имени
-func (c *connectMap) deleteByName(name string) {
-	c.mx.Lock()
-	delete(c.m, name)
-	c.mx.Unlock()
-}
-
-// deleteByName Освобождение занятого имени по pstxID
-func (c *connectMap) deleteByPstxID(pstxID string) {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-	for k, v := range c.m {
-		if v == pstxID {
-			delete(c.m, k)
-
-			return
-		}
-	}
-
-}
-
-// checkNameAndPstxID Проверка, есть ли переданное имя в мапе и его соответствие с pstxID
-func (c *connectMap) checkNameAndPstxID(name, pstxID string) error {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-
-	existPstxID, ok := c.m[name]
-	if !ok {
-		return fmt.Errorf("%s задан вручную", flags.UserDataDir)
-	}
-
-	if existPstxID != pstxID {
-		return fmt.Errorf("%s not correct", flagPstxID)
-	}
-
-	return nil
-}
-
 func main() {
+	flag.BoolVar(&isDocker, "docker", false, "true, если запускается в докере")
+
+	flag.Parse()
+
 	zaplogger := logger.NewZapLogger("info", false)
 
 	// Ограничение на максимальное количество одновременно запущенных браузеров
@@ -189,6 +140,64 @@ func main() {
 	}
 }
 
+type connectMap struct {
+	m  map[string]string // Мапа для хранения папки с данными браузера
+	mx sync.Mutex
+}
+
+// getNewName возвращает не занятое имя и добавляет его в занятые
+func (c *connectMap) getNewName(pstxID string) string {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+	for i := 1; i < 10; i++ {
+		n := fmt.Sprintf("%s%d", relativeUserDataPath, i)
+		if _, ok := c.m[n]; !ok {
+			c.m[n] = pstxID
+			return n
+		}
+	}
+
+	return ""
+}
+
+// deleteByName Освобождение занятого имени
+func (c *connectMap) deleteByName(name string) {
+	c.mx.Lock()
+	delete(c.m, name)
+	c.mx.Unlock()
+}
+
+// deleteByName Освобождение занятого имени по pstxID
+func (c *connectMap) deleteByPstxID(pstxID string) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+	for k, v := range c.m {
+		if v == pstxID {
+			delete(c.m, k)
+
+			return
+		}
+	}
+
+}
+
+// checkNameAndPstxID Проверка, есть ли переданное имя в мапе и его соответствие с pstxID
+func (c *connectMap) checkNameAndPstxID(name, pstxID string) error {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	existPstxID, ok := c.m[name]
+	if !ok {
+		return fmt.Errorf("%s задан вручную", flags.UserDataDir)
+	}
+
+	if existPstxID != pstxID {
+		return fmt.Errorf("%s not correct", flagPstxID)
+	}
+
+	return nil
+}
+
 // getFolderNameAndPstxIDFromHeaders получение папки пользователя и pstx запроса из хедеров
 func getFolderNameAndPstxIDFromHeaders(c *gin.Context) (userDataPath, pstxID string, err error) {
 	l := &launcher.Launcher{}
@@ -213,6 +222,16 @@ func getFolderNameAndPstxIDFromHeaders(c *gin.Context) (userDataPath, pstxID str
 	userDataPath = l.Flags[flags.UserDataDir][0]
 
 	pstxID = l.Flags[flagPstxID][0]
+
+	// Для докера ставим обязательные значения
+	if isDocker {
+		l.Headless(true)
+		l.Set("disable-gpu")
+		l.Set("disable-dev-shm-usage")
+		l.Set(flags.NoSandbox)
+		// Подменяем в запросе пользователя
+		c.Request.Header.Set(launcher.HeaderName, utils.MustToJSON(l))
+	}
 
 	return userDataPath, pstxID, nil
 }

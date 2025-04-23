@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"github.com/Genry72/rodbrowser/pkg/logger"
@@ -10,12 +9,10 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/google/uuid"
-	cp "github.com/otiai10/copy"
 	"go.uber.org/zap"
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"sync"
 	"time"
 )
@@ -242,32 +239,4 @@ func getLounch(userDataPath, pstxID string) *launcher.Launcher {
 	l.Set(flagPstxID, pstxID)
 
 	return l
-}
-
-//go:embed data/templateUserDataDir
-var srcTemplateDir embed.FS
-
-// Создание или копирование папки с сессиями браузера
-func createOrMakeFolder(userDataPath string) error {
-	pwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	folder := path.Base(userDataPath)
-
-	resultPath := path.Join(pwd, relativeUserDataPath, folder)
-	_, err = os.Stat(resultPath)
-	if err == nil {
-		return nil
-	}
-
-	if err := cp.Copy("data/templateUserDataDir", resultPath, cp.Options{
-		FS:                srcTemplateDir,
-		PermissionControl: cp.AddPermission(0777),
-	}); err != nil {
-		return fmt.Errorf("cp.Copy: %w", err)
-	}
-
-	return nil
 }

@@ -19,8 +19,6 @@ FROM ubuntu:20.04
 WORKDIR /src
 
 ARG apt_sources="http://archive.ubuntu.com"
-# Откуда что куда
-COPY --from=builder /src/server .
 
 RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list && \
     apt-get update > /dev/null && \
@@ -54,5 +52,8 @@ RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list &&
 # Открываем порт сервера
 EXPOSE 8081
 
+# Откуда что куда
+COPY --from=builder /src/server .
 
-CMD ["/src/server"]
+# Запуск с ключем
+CMD ["/src/server", "-docker"]

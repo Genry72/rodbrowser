@@ -47,6 +47,7 @@ RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list &&
     # cleanup \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
+    rm -rf /tmp/* /var/tmp/* && \
     rm -rf ./google-chrome-stable_current_amd64.deb
 
 # Открываем порт сервера

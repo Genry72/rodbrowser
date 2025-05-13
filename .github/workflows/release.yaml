@@ -79,5 +79,5 @@ jobs:
           goarch: ${{ matrix.goarch }}
           #          goversion: "https://dl.google.com/go/go1.13.1.linux-amd64.tar.gz"
           project_path: "./cmd"
-          binary_name: "skidochnik"
+          binary_name: ${{ env.GITHUB_REPOSITORY }}
           extra_files: README.md

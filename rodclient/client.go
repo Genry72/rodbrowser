@@ -1,4 +1,4 @@
-package client
+package rodclient
 
 import (
 	"context"

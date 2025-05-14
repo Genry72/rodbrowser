@@ -3,7 +3,7 @@ services:
   chrome-app:
     container_name: chrome-service
     image: chrome-go-server
-    restart: always # ключевое свойство для автоматического перезапуска
+    restart: unless-stopped  # ключевое свойство для автоматического перезапуска
     build:
       # Где лежит докер файл
       context: ./

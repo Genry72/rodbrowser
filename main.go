@@ -9,13 +9,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/launcher/flags"
-	"github.com/go-rod/rod/lib/utils"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"log"
 	"net/http"
 	"os"
-	"sync"
+	"strings"
 	"time"
 )
 
@@ -27,7 +26,6 @@ const hostport = ":8081"
 const (
 	// Относительный путь до папки с данными браузера
 	relativeUserDataPath = "./data/"
-	flagPstxID           = "pstxID"
 )
 
 func main() {
@@ -37,35 +35,52 @@ func main() {
 
 	zaplogger := logger.NewZapLogger("info", false)
 
-	// Ограничение на максимальное количество одновременно запущенных браузеров
-	limitchan := make(chan struct{}, 2)
-
-	// Мапа для хранения "user-data-dir". Каждое новое подключение это отдельная папка (максимум 2)
-	umap := &connectMap{
-		m: make(map[string]string),
-	}
-
 	m := launcher.NewManager()
 
 	m.Logger = log.New(os.Stdout, "", 0)
 
+	// Ограничение на максимальное количество одновременно запущенных браузеров
+	limitchan := make(chan struct{}, 2)
+
 	// Снимаем ограничения на передачу заголовков. Все проверки можно добавить в gin
-	m.BeforeLaunch = func(l *launcher.Launcher, writer http.ResponseWriter, request *http.Request) {}
+	m.BeforeLaunch = func(l *launcher.Launcher, writer http.ResponseWriter, request *http.Request) {
+		udd := l.Get(flags.UserDataDir)
+		// Пользователь не передал путь до папки с данными браузера
+		if udd == "" {
+			udd = uuid.New().String()
+			// Удаляем папку пользователя после закрытия браузера
+			l.Delete(flags.KeepUserDataDir)
+		}
+
+		if !strings.HasPrefix(udd, relativeUserDataPath) {
+			udd = relativeUserDataPath + udd
+		}
+
+		l.Set(flags.UserDataDir, udd)
+
+		// Закрытие браузера после отключения клиента
+		l.Leakless(true)
+
+		// Для докера ставим обязательные значения
+		if isDocker {
+			l.Headless(true)
+			l.Set("disable-gpu")
+			l.Set("disable-dev-shm-usage")
+			l.Set(flags.NoSandbox)
+		}
+
+		zaplogger.Info(l.Get(flags.UserDataDir))
+	}
 
 	// Сюда приходит первый запрос, для получения параметров подключения.
-	// Здесь же выдается пользователю путь до директории хранения данных браузера
-	// Данные забираются из контекста, добавленные gin-ом
 	m.Defaults = func(writer http.ResponseWriter, request *http.Request) *launcher.Launcher {
 		limitchan <- struct{}{}
-		// Получаем свободную папку
-		pstxID := uuid.New().String()
-		userDataPath := umap.getNewName(pstxID)
-		zaplogger.Info("Выдали",
-			zap.String("userDataPath", userDataPath),
-			zap.Int("count open browsers", len(umap.m)),
-			zap.String(flagPstxID, pstxID),
-		)
-		return getLounch(userDataPath, pstxID)
+
+		zaplogger.Info("Первый запрос") //zap.Int("count open browsers", len(umap.m)),
+
+		l := getEmptyLounch()
+
+		return l
 	}
 
 	gin.SetMode(gin.ReleaseMode)
@@ -76,52 +91,32 @@ func main() {
 	g.GET("/", func(c *gin.Context) {
 		// Открытие браузера. Здесь передаются данные которые мы выдали при первом подключении
 		if c.Request.Header.Get("Upgrade") == "websocket" {
-			// За 1 минуту клиент должен выполнить всю работу и отключиться. Иначе принудительно закроем соединение
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			// За 1 час клиент должен выполнить всю работу и отключиться. Иначе принудительно закроем соединение
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Hour)
 			defer cancel()
 
 			c.Request = c.Request.WithContext(ctx)
 
-			// Получаем папку пользователя и pstxid из хедеров
-			userDataPath, pstxID, err := getFolderNameAndPstxIDFromHeaders(c)
+			l, err := getLouncherByHeaders(c.GetHeader(launcher.HeaderName))
 			if err != nil {
-				zaplogger.Error("getFolderNameAndPstxIDFromHeaders", zap.Error(err))
-				_ = c.AbortWithError(500, fmt.Errorf("getFolderNameFromHeadersЖ %w", err))
+				zaplogger.Error("getLouncherByHeaders", zap.Error(err))
+				_ = c.AbortWithError(500, fmt.Errorf("getLouncherByHeaders %w", err))
 				return
 			}
+
+			userDataPath := l.Get(flags.UserDataDir)
 
 			// После отключения пользователя удаляем информацию с его подключением из мапы
 			// Данные о параметрах подключения приходят во входящем запросе
 			defer func() {
-				umap.deleteByName(userDataPath)
-				umap.deleteByPstxID(pstxID)
 				zaplogger.Info("Закрыли",
 					zap.String("userDataPath", userDataPath),
-					zap.Int("count open browsers", len(umap.m)),
-					zap.String(flagPstxID, pstxID),
+					//zap.Int("count open browsers", len(umap.m)),
 				)
 				<-limitchan
 			}()
 
-			// Проверка корректности передачи хедеров
-			if err := umap.checkNameAndPstxID(userDataPath, pstxID); err != nil {
-				zaplogger.Error("umap.checkNameAndPstxID", zap.Error(err), zap.String(flagPstxID, pstxID))
-				_ = c.AbortWithError(400, fmt.Errorf("getFolderNameFromHeadersЖ %w", err))
-				return
-			}
-
-			// Копирование папки сессий браузера, если их нет
-			//if err := createOrMakeFolder(userDataPath); err != nil {
-			//	zaplogger.Error("createOrMakeFolder", zap.Error(err))
-			//	_ = c.AbortWithError(500, fmt.Errorf("createOrMakeFolder %w", err))
-			//	return
-			//}
-
-			zaplogger.Info("Открыли",
-				zap.Int("count open browsers", len(umap.m)),
-				zap.String("userDataPath", userDataPath),
-				zap.String(flagPstxID, pstxID),
-			)
+			zaplogger.Info("Открыли")
 
 		}
 
@@ -140,113 +135,30 @@ func main() {
 	}
 }
 
-type connectMap struct {
-	m  map[string]string // Мапа для хранения папки с данными браузера
-	mx sync.Mutex
-}
-
-// getNewName возвращает не занятое имя и добавляет его в занятые
-func (c *connectMap) getNewName(pstxID string) string {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-	for i := 1; i < 10; i++ {
-		n := fmt.Sprintf("%s%d", relativeUserDataPath, i)
-		if _, ok := c.m[n]; !ok {
-			c.m[n] = pstxID
-			return n
-		}
+func getLouncherByHeaders(lanchHeader string) (*launcher.Launcher, error) {
+	if lanchHeader == "" {
+		return nil, fmt.Errorf("пустой хедер")
 	}
 
-	return ""
-}
-
-// deleteByName Освобождение занятого имени
-func (c *connectMap) deleteByName(name string) {
-	c.mx.Lock()
-	delete(c.m, name)
-	c.mx.Unlock()
-}
-
-// deleteByName Освобождение занятого имени по pstxID
-func (c *connectMap) deleteByPstxID(pstxID string) {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-	for k, v := range c.m {
-		if v == pstxID {
-			delete(c.m, k)
-
-			return
-		}
-	}
-
-}
-
-// checkNameAndPstxID Проверка, есть ли переданное имя в мапе и его соответствие с pstxID
-func (c *connectMap) checkNameAndPstxID(name, pstxID string) error {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-
-	existPstxID, ok := c.m[name]
-	if !ok {
-		return fmt.Errorf("%s задан вручную", flags.UserDataDir)
-	}
-
-	if existPstxID != pstxID {
-		return fmt.Errorf("%s not correct", flagPstxID)
-	}
-
-	return nil
-}
-
-// getFolderNameAndPstxIDFromHeaders получение папки пользователя и pstx запроса из хедеров
-func getFolderNameAndPstxIDFromHeaders(c *gin.Context) (userDataPath, pstxID string, err error) {
 	l := &launcher.Launcher{}
 
-	options := c.GetHeader(launcher.HeaderName)
-	if options == "" {
-		return "", "", fmt.Errorf("%s нет в хедерах", launcher.HeaderName)
+	if err := json.Unmarshal([]byte(lanchHeader), l); err != nil {
+		return nil, fmt.Errorf("не распарсили %s: %w", lanchHeader, err)
 	}
 
-	if err := json.Unmarshal([]byte(options), l); err != nil {
-		return "", "", fmt.Errorf("не распарсили %s: %w", options, err)
-	}
-
-	if len(l.Flags[flags.UserDataDir]) == 0 {
-		return "", "", fmt.Errorf("нет папки пользователя в хедерах")
-	}
-
-	if len(l.Flags[flagPstxID]) == 0 {
-		return "", "", fmt.Errorf("нет pstxID в хедерах")
-	}
-
-	userDataPath = l.Flags[flags.UserDataDir][0]
-
-	pstxID = l.Flags[flagPstxID][0]
-
-	// Для докера ставим обязательные значения
-	if isDocker {
-		l.Headless(true)
-		l.Set("disable-gpu")
-		l.Set("disable-dev-shm-usage")
-		l.Set(flags.NoSandbox)
-		// Подменяем в запросе пользователя
-		c.Request.Header.Set(launcher.HeaderName, utils.MustToJSON(l))
-	}
-
-	return userDataPath, pstxID, nil
+	return l, nil
 }
 
 // getLounch возвращаем лаунчер, добавляем psxID в хедеры
-func getLounch(userDataPath, pstxID string) *launcher.Launcher {
+func getEmptyLounch() *launcher.Launcher {
 	path, _ := launcher.LookPath()
 
 	l := launcher.New()
 	for k := range l.Flags {
 		l.Delete(k)
 	}
-	l.Bin(path)
 
-	l.UserDataDir(userDataPath)
+	l.Bin(path)
 
 	for k, v := range launcher.NewUserMode().Flags {
 		l.Set(k, v...)
@@ -255,7 +167,6 @@ func getLounch(userDataPath, pstxID string) *launcher.Launcher {
 	// Закрытие браузера после отключения клиента
 	l.Leakless(true)
 	l.Set("no-first-run")
-	l.Set(flagPstxID, pstxID)
 
 	return l
 }

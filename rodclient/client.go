@@ -3,6 +3,7 @@ package rodclient
 import (
 	"context"
 	"fmt"
+	"github.com/Genry72/rodbrowser/pkg/logger"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"go.uber.org/zap"
@@ -10,17 +11,31 @@ import (
 )
 
 type Browser struct {
-	remote       bool
-	hostport     string
-	browser      *rod.Browser
-	connectCount int
-	connected    bool
-	mx           sync.Mutex
-	log          *zap.Logger
+	remote           bool
+	hostport         string
+	browser          *rod.Browser
+	connectCount     int
+	fnModifyLouncher func(launcher *launcher.Launcher) // для изменения параметров запуска браузера
+	mx               sync.Mutex
+	log              *zap.Logger
 }
 
-func New(log *zap.Logger) *Browser {
-	return &Browser{log: log}
+/*
+New Создание нового клиента
+Пример:
+
+	fnModifyLouncher := func(l *launcher.Launcher) {
+		l.Set("disable-http2")
+		l.Headless(false)
+		l.UserDataDir("datadir")
+		//l.KeepUserDataDir()
+	}
+	client := rodclient.New(fnModifyLouncher, zaplogger).Remote("localhost:8081")
+*/
+func New(fnModifyLouncher func(launcher *launcher.Launcher)) *Browser {
+	return &Browser{
+		fnModifyLouncher: fnModifyLouncher,
+		log:              logger.NewZapLogger("info", false)}
 }
 
 // Remote Подключение к удаленному хосту
@@ -34,7 +49,7 @@ func (r *Browser) Remote(hostport string) *Browser {
 }
 
 // Connect Подключение к браузеру.
-// Нужно выполнить browser.Close() после использования
+// Нужно выполнить Browser.Disconnect() после использования
 func (r *Browser) Connect(ctx context.Context) (*rod.Browser, error) {
 	r.mx.Lock()
 	defer r.mx.Unlock()
@@ -46,17 +61,10 @@ func (r *Browser) Connect(ctx context.Context) (*rod.Browser, error) {
 	}
 
 	defer func() {
-		fmt.Println(r.connectCount)
+		r.log.Info("connectCount", zap.Int("count", r.connectCount))
 	}()
 
-	if r.connected && r.remote { // повторное подключение возможно только для удаленных вызовов
-		if err := r.browser.Connect(); err != nil {
-			r.connected = false
-			r.connectCount = 0
-		}
-	}
-
-	if r.connected {
+	if r.isConnected() {
 		r.connectCount++
 		return r.browser, nil
 	}
@@ -67,25 +75,24 @@ func (r *Browser) Connect(ctx context.Context) (*rod.Browser, error) {
 	)
 
 	if r.remote {
-		br, err = getRemoteBrowser(r.hostport)
+		br, err = getRemoteBrowser(r.hostport, r.fnModifyLouncher)
 	} else {
-		br, err = getLocalBrowser()
+		br, err = getLocalBrowser(r.fnModifyLouncher)
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getBrowser: %w", err)
 	}
 
 	if err := br.Connect(); err != nil {
 		return nil, fmt.Errorf("br.Connect: %w", err)
 	}
 
-	br.WithPanic(func(i interface{}) {
-		r.log.Error("err", zap.Any("", i))
+	br.WithPanic(func(fail interface{}) {
+		r.log.Error("err", zap.Any("", fail))
 	})
 
 	r.browser = br
-	r.connected = true
 	r.connectCount++
 
 	r.log.Info("open")
@@ -93,29 +100,16 @@ func (r *Browser) Connect(ctx context.Context) (*rod.Browser, error) {
 	return r.browser, nil
 }
 
-func getLocalBrowser() (*rod.Browser, error) {
-	l := launcher.NewUserMode()
-
-	l.Leakless(true)
-
-	launch, err := l.Launch()
-	if err != nil {
-		return nil, fmt.Errorf("l.Launch: %w", err)
-	}
-
-	br := rod.New().ControlURL(launch)
-
-	return br, nil
-}
-
-func (r *Browser) Close() {
+// Disconnect Закрытие браузера, если нет активных подключений
+func (r *Browser) Disconnect() {
 	r.mx.Lock()
 	defer r.mx.Unlock()
 	defer func() {
-		fmt.Println(r.connectCount)
+		r.log.Info("connectCount", zap.Int("count", r.connectCount))
 	}()
 
-	if !r.connected {
+	if !r.isConnected() {
+		r.connectCount = 0
 		return
 	}
 
@@ -126,23 +120,31 @@ func (r *Browser) Close() {
 			r.log.Error(err.Error())
 		}
 
-		r.connected = false
-
 		r.log.Info("close")
 	}
 }
 
-func getRemoteBrowser(hpstport string) (*rod.Browser, error) {
-	l, err := launcher.NewManaged("ws://" + hpstport)
+// isConnected Возвращает true если есть активное подключение
+func (r *Browser) isConnected() bool {
+	if r.browser == nil {
+		return false
+	}
+
+	if _, err := r.browser.Pages(); err != nil {
+		return false
+	}
+	return true
+}
+
+func getRemoteBrowser(hostport string, fnModifyLouncher func(launcher *launcher.Launcher)) (*rod.Browser, error) {
+	l, err := launcher.NewManaged("ws://" + hostport)
 	if err != nil {
 		return nil, fmt.Errorf("launcher.NewManaged: %w", err)
 	}
 
-	l.Set("disable-http2")
-
-	//l.Headless(true) // не влияет при запуске на удаленном сервере
-
-	l.KeepUserDataDir()
+	if fnModifyLouncher != nil {
+		fnModifyLouncher(l)
+	}
 
 	client, err := l.Client()
 	if err != nil {
@@ -150,6 +152,27 @@ func getRemoteBrowser(hpstport string) (*rod.Browser, error) {
 	}
 
 	br := rod.New().Client(client)
+
+	return br, nil
+}
+
+func getLocalBrowser(fnModifyLouncher func(launcher *launcher.Launcher)) (*rod.Browser, error) {
+	l := launcher.NewUserMode()
+
+	l.Leakless(true)
+
+	if fnModifyLouncher != nil {
+		fnModifyLouncher(l)
+	}
+
+	l.Set("no-first-run")
+
+	launch, err := l.Launch()
+	if err != nil {
+		return nil, fmt.Errorf("l.Launch: %w", err)
+	}
+
+	br := rod.New().ControlURL(launch)
 
 	return br, nil
 }

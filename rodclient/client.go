@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/Genry72/rodbrowser/pkg/logger"
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/cdp"
 	"github.com/go-rod/rod/lib/launcher"
 	"go.uber.org/zap"
 	"sync"
@@ -131,6 +132,12 @@ func (r *Browser) isConnected() bool {
 	}
 
 	if _, err := r.browser.Pages(); err != nil {
+		if err2, ok := err.(*cdp.Error); ok {
+			if err2.Message == "No target with given id found" {
+				return true
+			}
+			r.log.Error(err.Error())
+		}
 		return false
 	}
 	return true

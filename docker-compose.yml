@@ -2,6 +2,7 @@ version: '3'
 services:
   chrome-app:
     container_name: chrome-service
+    platform: linux/amd64
     image: chrome-go-server
     restart: unless-stopped  # ключевое свойство для автоматического перезапуска
     build:
@@ -9,14 +10,14 @@ services:
       context: ./
     ports:
       - "8081:8081"
-#    volumes:
+    volumes:
 #      - type: bind
 #        source: /tmp/.X11-unix
 #        target: /tmp/.X11-unix       # Пробрасываем x-ы
 
-#      - type: bind
-#        source: ./data1
-#        target: /src/data
+      - type: bind
+        source: ./data
+        target: /src/data
 networks:
   backend-network:
     driver: bridge

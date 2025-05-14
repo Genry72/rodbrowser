@@ -14,14 +14,14 @@ COPY . .
 # Собираем бинарник
 RUN CGO_ENABLED=0 GOOS=linux go build -o server .
 
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 WORKDIR /src
 
 ARG apt_sources="http://archive.ubuntu.com"
 
-RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list && \
-    apt-get update > /dev/null && \
+#RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list && \
+RUN apt-get update > /dev/null && \
     apt-get install --no-install-recommends -y \
     wget \
     libcanberra-gtk-module \
@@ -42,8 +42,8 @@ RUN sed -i "s|http://archive.ubuntu.com|$apt_sources|g" /etc/apt/sources.list &&
     dumb-init \
     # headful mode support, for example: $ xvfb-run chromium-browser --remote-debugging-port=9222
     xvfb && \
-    wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
-    apt-get install -y ./google-chrome-stable_current_amd64.deb && \
+#    wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+#    apt-get install -y ./google-chrome-stable_current_amd64.deb && \
     # cleanup \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \

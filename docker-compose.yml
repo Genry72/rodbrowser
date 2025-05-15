@@ -18,6 +18,8 @@ services:
       - type: bind
         source: ./data
         target: /src/data
+    networks:
+      - backend_network
 networks:
-  backend-network:
-    driver: bridge
+  backend_network:
+    external: true

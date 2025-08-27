@@ -8,8 +8,8 @@ services:
     build:
       # Где лежит докер файл
       context: ./
-    ports:
-      - "8081:8081"
+#    ports:
+#      - "8081:8081"
     volumes:
 #      - type: bind
 #        source: /tmp/.X11-unix
